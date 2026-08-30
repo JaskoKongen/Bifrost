@@ -1,0 +1,9 @@
+[core]
+    hooksPath = .githooks
+
+[alias]
+    sync = "!git fetch origin && git rebase origin/dev"
+    pf = push --force-with-lease
+
+[rebase]
+    autoStash = true
