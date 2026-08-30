@@ -1,15 +1,6 @@
-Ja, det er god praksis at have et direkte link og en hurtig onboarding-sektion i `README.md`, så alle i gruppen ser det med det samme på forsiden af repositoriet.
-
----
-
-### Opdateret `README.md`
-
-Åbn `README.md` og opdater indholdet til følgende:
-
-```markdown
 # Bifrost 🌉
 
-Et system til håndtering og styring af afleveringer mellem studerende og undervisere. Projektet udvikles som et bachelorprojekt i softwareteknologi.
+Et system til styring af kommunikation mellem studerende og undervisere. Projektet udvikles som et bachelorprojekt i softwareteknologi af Jonas, Jakob og Rune.
 
 ---
 
@@ -17,7 +8,7 @@ Et system til håndtering og styring af afleveringer mellem studerende og underv
 
 1. **Klon repositoriet:**
    ```bash
-   git clone git@github.com:DIT-BRUGERNAVN/Bifrost.git
+   git clone git@github.com:JaskoKongen/Bifrost.git
    cd Bifrost
 
 ```

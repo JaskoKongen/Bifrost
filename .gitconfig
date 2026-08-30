@@ -2,7 +2,7 @@
     hooksPath = .githooks
 
 [alias]
-    sync = "!git fetch origin && git rebase origin/dev"
+    sync = "!f() { CURRENT=$(git symbolic-ref --short HEAD 2>/dev/null); if [ \"$CURRENT\" = \"main\" ] || [ \"$CURRENT\" = \"dev\" ]; then echo \"Fejl: Du må ikke køre 'git sync' direkte på $CURRENT.\"; exit 1; fi; git fetch origin && git rebase origin/dev; }; f"
     pf = push --force-with-lease
 
 [rebase]
