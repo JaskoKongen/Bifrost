@@ -27,31 +27,31 @@ jobs:
 
       - name: Discover and Test .NET Solutions/Projects
         run: |
-          # Find alle .sln filer rekursivt (ignorer skjulte mapper)
+          # Find all .sln files recursively (excluding hidden directories)
           mapfile -t SOLUTIONS < <(find . -name "*.sln" -not -path "*/.*/*")
 
           if [ ${#SOLUTIONS[@]} -gt 0 ]; then
-            echo "Fandt ${#SOLUTIONS[@]} .NET solution(s):"
+            echo "Found ${#SOLUTIONS[@]} .NET solution(s):"
             for sln in "${SOLUTIONS[@]}"; do
-              echo "==> Behandler solution: $sln"
+              echo "==> Processing solution: $sln"
               dotnet restore "$sln"
-              dotnet format "$sln" --verify-no-changes || echo "Advarsel: Format-tjek fejlede, men blokerer ikke."
+              dotnet format "$sln" --verify-no-changes || echo "Warning: Code format verification failed, but continuing build."
               dotnet build "$sln" --configuration Release --no-restore
               dotnet test "$sln" --configuration Release --no-build --verbosity normal
             done
           else
-            # Fallback: Hvis der ikke er en .sln endnu, tjek efter individuelle .csproj
+            # Fallback: Check for individual .csproj files if no .sln exists yet
             mapfile -t PROJECTS < <(find . -name "*.csproj" -not -path "*/.*/*")
             if [ ${#PROJECTS[@]} -gt 0 ]; then
-              echo "Ingen .sln fundet. Behandler ${#PROJECTS[@]} individuelle .csproj projekt(er):"
+              echo "No .sln found. Processing ${#PROJECTS[@]} individual .csproj project(s):"
               for proj in "${PROJECTS[@]}"; do
-                echo "==> Behandler projekt: $proj"
+                echo "==> Processing project: $proj"
                 dotnet restore "$proj"
                 dotnet build "$proj" --configuration Release --no-restore
                 dotnet test "$proj" --configuration Release --no-build --verbosity normal || true
               done
             else
-              echo "Ingen .NET solutions eller projekter fundet i repositoriet. Springer over."
+              echo "No .NET solutions or projects found in repository. Skipping."
             fi
           fi
 
@@ -69,27 +69,25 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Discover and Test Frontend Projects
         run: |
-          # Find alle mapper der indeholder package.json (ekskluder node_modules og .github)
+          # Find all directories containing package.json (excluding node_modules and .github)
           mapfile -t PKG_DIRS < <(find . -name "package.json" -not -path "*/node_modules/*" -not -path "*/.github/*" -exec dirname {} \;)
 
           if [ ${#PKG_DIRS[@]} -gt 0 ]; then
-            echo "Fandt ${#PKG_DIRS[@]} Node/Frontend projekt(er):"
+            echo "Found ${#PKG_DIRS[@]} Node/Frontend project(s):"
             for dir in "${PKG_DIRS[@]}"; do
-              echo "==> Behandler frontend i mappen: $dir"
+              echo "==> Processing frontend directory: $dir"
               pushd "$dir" > /dev/null
 
-              # Installer afhængigheder
               if [ -f "package-lock.json" ]; then
                 npm ci
               else
                 npm install
               fi
 
-              # Kør lint, test og build hvis scripts findes i package.json
               npm run lint --if-present
               npm test --if-present -- --watch=false --browsers=ChromeHeadless
               npm run build --if-present
@@ -97,5 +95,5 @@ jobs:
               popd > /dev/null
             done
           else
-            echo "Ingen package.json filer fundet uden for systemmapper. Springer over."
+            echo "No package.json files found outside system directories. Skipping."
           fi
