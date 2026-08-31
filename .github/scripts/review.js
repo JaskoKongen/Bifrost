@@ -1,10 +1,12 @@
 const fs = require("fs");
 const path = require("path");
+const { execSync } = require("child_process");
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const API_KEY = process.env.GEMINI_API_KEY_REVIEW;
 const PR_NUMBER = process.env.PR_NUMBER;
 const REPO = process.env.GITHUB_REPOSITORY;
+const CONTEXT_FILE_PATH = path.join(process.cwd(), "docs", "PROJECT_CONTEXT.md");
 
 const GITHUB_API = "https://api.github.com";
 
@@ -22,7 +24,7 @@ async function githubFetch(endpoint, options = {}) {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`GitHub API request failed (${response.status} ${response.statusText}): ${errorText}`);
+    throw new Error(`GitHub API request failed (${response.status} ${response.statusText}):${errorText}`);
   }
 
   const contentType = response.headers.get("content-type");
@@ -57,26 +59,29 @@ function extractAndCleanJson(rawText) {
     try {
       return JSON.parse(jsonMatch[0]);
     } catch {
-      // Ignore parse error and proceed
+      // Ignore parse error
     }
   }
   return null;
 }
 
-async function callGemini(prompt, systemInstruction) {
+async function callGemini(prompt, systemInstruction, expectJson = true) {
   for (const model of MODELS) {
     try {
       const generationConfig = {
-        temperature: 0.2,
-        responseMimeType: "application/json"
+        temperature: 0.2
       };
+
+      if (expectJson) {
+        generationConfig.responseMimeType = "application/json";
+      }
 
       if (model.startsWith("gemini-3")) {
         generationConfig.thinkingConfig = { thinkingLevel: "MEDIUM" };
       }
 
       const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(API_KEY);
-      
+
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -88,26 +93,29 @@ async function callGemini(prompt, systemInstruction) {
       });
 
       if (response.status === 429 || response.status === 503) {
-        console.warn(`Model ${model} hit rate limit / unavailable (${response.status}). Trying next fallback...`);
+        console.warn(`Model ${model} hit rate limit (${response.status}). Trying fallback...`);
         continue;
       }
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.warn(`Model ${model} returned error ${response.status}: ${errorText}. Trying next fallback...`);
+        console.warn(`Model ${model} returned error ${response.status}: ${errorText}. Trying fallback...`);
         continue;
       }
 
       const data = await response.json();
       const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      const parsed = extractAndCleanJson(rawText);
 
+      if (!expectJson) {
+        return rawText ? rawText.trim() : null;
+      }
+
+      const parsed = extractAndCleanJson(rawText);
       if (parsed) {
-        console.log(`Review successfully generated using model: ${model}`);
         return parsed;
       }
 
-      console.warn(`Model ${model} returned invalid JSON payload. Trying next fallback...`);
+      console.warn(`Model ${model} returned invalid JSON payload. Trying fallback...`);
     } catch (err) {
       console.warn(`Error during API call to ${model}:`, err.message);
     }
@@ -166,6 +174,66 @@ function matchSnippetToLine(fileLinesMap, filePath, snippet) {
   return partialMatch ? partialMatch.line : null;
 }
 
+async function updateContextFile(diff, prBranch) {
+  let currentContext = "";
+  if (fs.existsSync(CONTEXT_FILE_PATH)) {
+    currentContext = fs.readFileSync(CONTEXT_FILE_PATH, "utf-8");
+  }
+
+  const systemInstruction = `
+You are a software architecture documentation assistant for the Bifrost project.
+Your task is to evaluate if this Pull Request introduces high-level architecture changes, new modules, domain models, APIs, external integrations, or structural patterns that belong in 'docs/PROJECT_CONTEXT.md'.
+
+Rules:
+1. If the PR ONLY contains bugfixes, refactoring, documentation, tests, minor UI tweaks, or code that fits within existing architecture, return EXACTLY: [NO_CHANGES]
+2. ONLY if significant new architectural concepts, domain models, entities, database tables, or modules are introduced: Output the COMPLETE updated Markdown file.
+3. Write 100% in English without markdown code blocks (\`\`\`markdown ... \`\`\`).
+4. Maintain high-level architectural value. Do NOT log commit histories or small implementation details.
+`;
+
+  const prompt = `
+Existing PROJECT_CONTEXT.md:
+${currentContext}
+
+PR Git Diff:
+\`\`\`diff
+${diff}
+\`\`\`
+`;
+
+  try {
+    console.log("Evaluating whether PROJECT_CONTEXT.md requires updates...");
+    const response = await callGemini(prompt, systemInstruction, false);
+    if (!response) return;
+
+    if (response.includes("[NO_CHANGES]")) {
+      console.log("No architectural changes detected. Skipping PROJECT_CONTEXT.md update.");
+      return;
+    }
+
+    const cleanedContext = response
+      .replace(/^```markdown\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```\s*$/i, "")
+      .trim();
+
+    if (cleanedContext && cleanedContext !== currentContext.trim()) {
+      fs.mkdirSync(path.dirname(CONTEXT_FILE_PATH), { recursive: true });
+      fs.writeFileSync(CONTEXT_FILE_PATH, cleanedContext + "\n", "utf-8");
+
+      execSync("git config user.name 'github-actions[bot]'");
+      execSync("git config user.email 'github-actions[bot]@users.noreply.github.com'");
+      execSync(`git checkout ${prBranch}`);
+      execSync("git add docs/PROJECT_CONTEXT.md");
+      execSync("git commit -m 'docs: auto-update PROJECT_CONTEXT.md [skip review]'");
+      execSync(`git push origin ${prBranch}`);
+      console.log("PROJECT_CONTEXT.md updated and committed to PR branch.");
+    }
+  } catch (err) {
+    console.warn("Could not automatically update PROJECT_CONTEXT.md:", err.message);
+  }
+}
+
 async function run() {
   const pr = await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}`);
   const diff = await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}`, {
@@ -178,9 +246,8 @@ async function run() {
     : "";
 
   let projectContext = "";
-  const contextPath = path.join(process.cwd(), "docs", "PROJECT_CONTEXT.md");
-  if (fs.existsSync(contextPath)) {
-    projectContext = fs.readFileSync(contextPath, "utf-8");
+  if (fs.existsSync(CONTEXT_FILE_PATH)) {
+    projectContext = fs.readFileSync(CONTEXT_FILE_PATH, "utf-8");
   }
 
   const systemInstruction = `
@@ -234,7 +301,7 @@ ${diff}
 `;
 
   console.log("Analyzing PR with AI reviewer...");
-  const aiResult = await callGemini(prompt, systemInstruction);
+  const aiResult = await callGemini(prompt, systemInstruction, true);
 
   if (!pr.body || pr.body.trim().length === 0) {
     if (aiResult.pr_summary_description) {
@@ -273,18 +340,41 @@ ${diff}
     finalSummary += `\n\n### 💬 Yderligere bemærkninger\n${unmatchedComments.join("\n")}`;
   }
 
-  await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}/reviews`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      commit_id: pr.head.sha,
-      event: aiResult.verdict || "COMMENT",
-      body: finalSummary,
-      comments: validComments
-    })
-  });
+  let reviewEvent = aiResult.verdict || "COMMENT";
 
-  console.log(`Review submitted with verdict: ${aiResult.verdict}`);
+  try {
+    await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}/reviews`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        commit_id: pr.head.sha,
+        event: reviewEvent,
+        body: finalSummary,
+        comments: validComments
+      })
+    });
+  } catch (err) {
+    if (reviewEvent === "APPROVE" && err.message.includes("422")) {
+      console.warn("GitHub Actions is restricted from submitting formal APPROVE. Falling back to COMMENT review event...");
+      await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}/reviews`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          commit_id: pr.head.sha,
+          event: "COMMENT",
+          body: `> **Status: ✅ Approved by AI Reviewer**\n\n${finalSummary}`,
+          comments: validComments
+        })
+      });
+    } else {
+      throw err;
+    }
+  }
+
+  console.log(`Review submitted with verdict: ${reviewEvent}`);
+
+  // Auto-update PROJECT_CONTEXT.md directly on the PR branch
+  await updateContextFile(diff, pr.head.ref);
 }
 
 run().catch((err) => {
