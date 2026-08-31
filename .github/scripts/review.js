@@ -1,15 +1,37 @@
 const fs = require("fs");
 const path = require("path");
-const github = require("@actions/github");
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const API_KEY = process.env.GEMINI_API_KEY_REVIEW;
-const PR_NUMBER = parseInt(process.env.PR_NUMBER, 10);
+const PR_NUMBER = process.env.PR_NUMBER;
+const REPO = process.env.GITHUB_REPOSITORY;
 
-const [owner, repo] = process.env.GITHUB_REPOSITORY.split("/");
-const octokit = github.getOctokit(GITHUB_TOKEN);
+const GITHUB_API = "https://api.github.com";
 
-// Fallback model-pipeline
+async function githubFetch(endpoint, options = {}) {
+  const url = endpoint.startsWith("http") ? endpoint : `${GITHUB_API}${endpoint}`;
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      "Authorization": `Bearer ${GITHUB_TOKEN}`,
+      "Accept": "application/vnd.github.v3+json",
+      "User-Agent": "Bifrost-AI-Reviewer",
+      ...options.headers
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`GitHub API request failed (${response.status} ${response.statusText}): ${errorText}`);
+  }
+
+  const contentType = response.headers.get("content-type");
+  if (contentType && contentType.includes("application/json")) {
+    return await response.json();
+  }
+  return await response.text();
+}
+
 const MODELS = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
@@ -71,9 +93,6 @@ function parseDiffLines(diffText) {
     const filePath = match[2].trim();
 
     const addedLines = [];
-    const hunkRegex = /@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/g;
-    const hunks = fileDiff.split(/^@@/m);
-
     let currentNewLine = 0;
     const lines = fileDiff.split("\n");
 
@@ -115,32 +134,16 @@ function matchSnippetToLine(fileLinesMap, filePath, snippet) {
 }
 
 async function run() {
-  // 1. Hent PR data og diff
-  const { data: pr } = await octokit.rest.pulls.get({
-    owner,
-    repo,
-    pull_number: PR_NUMBER
+  const pr = await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}`);
+  const diff = await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}`, {
+    headers: { "Accept": "application/vnd.github.v3.diff" }
   });
 
-  const { data: diff } = await octokit.rest.pulls.get({
-    owner,
-    repo,
-    pull_number: PR_NUMBER,
-    mediaType: { format: "diff" }
-  });
+  const previousComments = await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}/comments`);
+  const historicalFeedback = Array.isArray(previousComments)
+    ? previousComments.map((c) => `[Fil: ${c.path} Linje: ${c.line}]: ${c.body}`).join("\n")
+    : "";
 
-  // 2. Hent tidligere kommentarer for historik-tjek
-  const { data: previousComments } = await octokit.rest.pulls.listReviewComments({
-    owner,
-    repo,
-    pull_number: PR_NUMBER
-  });
-
-  const historicalFeedback = previousComments
-    .map((c) => `[Fil: ${c.path} Linje: ${c.line}]: ${c.body}`)
-    .join("\n");
-
-  // 3. Hent eventuel projektkontekst
   let projectContext = "";
   const contextPath = path.join(process.cwd(), "docs", "PROJECT_CONTEXT.md");
   if (fs.existsSync(contextPath)) {
@@ -199,19 +202,18 @@ ${diff}
   console.log("Analyserer PR med AI...");
   const aiResult = await callGemini(prompt, systemInstruction);
 
-  // 4. Opdater PR description, hvis den er tom
   if (!pr.body || pr.body.trim().length === 0) {
     if (aiResult.pr_summary_description) {
-      await octokit.rest.pulls.update({
-        owner,
-        repo,
-        pull_number: PR_NUMBER,
-        body: `### 📋 PR Beskrivelse (Autogenereret)\n\n${aiResult.pr_summary_description}`
+      await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: `### 📋 PR Beskrivelse (Autogenereret)\n\n${aiResult.pr_summary_description}`
+        })
       });
     }
   }
 
-  // 5. Match snippets til faktiske linjer i diffen
   const fileLinesMap = parseDiffLines(diff);
   const validComments = [];
   const unmatchedComments = [];
@@ -237,15 +239,15 @@ ${diff}
     finalSummary += `\n\n### 💬 Yderligere bemærkninger\n${unmatchedComments.join("\n")}`;
   }
 
-  // 6. Indsend det samlede review
-  await octokit.rest.pulls.createReview({
-    owner,
-    repo,
-    pull_number: PR_NUMBER,
-    commit_id: pr.head.sha,
-    event: aiResult.verdict || "COMMENT",
-    body: finalSummary,
-    comments: validComments
+  await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}/reviews`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      commit_id: pr.head.sha,
+      event: aiResult.verdict || "COMMENT",
+      body: finalSummary,
+      comments: validComments
+    })
   });
 
   console.log(`Review indsendt med status: ${aiResult.verdict}`);
