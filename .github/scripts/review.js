@@ -10,6 +10,20 @@ const CONTEXT_FILE_PATH = path.join(process.cwd(), "docs", "PROJECT_CONTEXT.md")
 
 const GITHUB_API = "https://api.github.com";
 
+// Model Pools
+const FAST_MODEL = "gemini-3.5-flash-lite";
+const HEAVY_MODELS = [
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash"
+];
+const FALLBACK_MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemma-4-31b-it",
+  "gemma-4-26b-a4b-it"
+];
+
 async function githubFetch(endpoint, options = {}) {
   const url = endpoint.startsWith("http") ? endpoint : `${GITHUB_API}${endpoint}`;
   const response = await fetch(url, {
@@ -34,17 +48,6 @@ async function githubFetch(endpoint, options = {}) {
   return await response.text();
 }
 
-// Verified models ordered by quota and stability
-const MODELS = [
-  "gemini-3.5-flash-lite",
-  "gemini-3.1-flash-lite",
-  "gemma-4-31b-it",
-  "gemma-4-26b-a4b-it",
-  "gemini-3.7-flash",
-  "gemini-3.6-flash",
-  "gemini-3.5-flash"
-];
-
 function extractAndCleanJson(rawText) {
   if (!rawText) return null;
 
@@ -65,62 +68,147 @@ function extractAndCleanJson(rawText) {
   return null;
 }
 
-async function callGemini(prompt, systemInstruction, expectJson = true) {
-  for (const model of MODELS) {
+async function requestGeminiModel(model, prompt, systemInstruction, expectJson = true) {
+  const generationConfig = {
+    temperature: 0.2
+  };
+
+  if (expectJson) {
+    generationConfig.responseMimeType = "application/json";
+  }
+
+  if (model.startsWith("gemini-3")) {
+    generationConfig.thinkingConfig = { thinkingLevel: "MEDIUM" };
+  }
+
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(API_KEY);
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      generationConfig
+    })
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Model ${model} returned status ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+  if (!expectJson) {
+    return rawText ? rawText.trim() : null;
+  }
+
+  return extractAndCleanJson(rawText);
+}
+
+function buildSystemInstruction(allowEscalation) {
+  const escalationRule = allowEscalation
+    ? `6. **Eskalering:** Hvis denne PR indeholder usædvanlig høj kompleksitet (f.eks. dybe arkitektoniske refactoringer på tværs af mange moduler, indviklede algoritmer eller subtile concurrency/race conditions), og du vurderer, at en tungere ræsonneringsmodel bør overtage analysen, SKAL du sætte "verdict": "ESCALATE". Vær ærlig og brug kun ESCALATE ved reel høj kompleksitet.`
+    : `6. **Ingen eskalering:** Du SKAL levere en fuld anmeldelse med verdict "APPROVE", "REQUEST_CHANGES" eller "COMMENT". Du må IKKE eskalere.`;
+
+  const verdictEnum = allowEscalation
+    ? `"APPROVE" | "REQUEST_CHANGES" | "COMMENT" | "ESCALATE"`
+    : `"APPROVE" | "REQUEST_CHANGES" | "COMMENT"`;
+
+  return `
+Du er en erfaren softwarearkitekt og tech lead, der anmelder et bachelorprojekt i softwareteknologi (Bifrost).
+
+## Sprog & Tone
+* Selve anmeldelsen og forklaringerne skrives på **dansk**, men alle tekniske begreber holdes på **engelsk** (f.eks. "Dependency Injection", "PR", "Controller", "Domain Model", "Repository", "DTO", "Race Condition").
+* Benyt sandwich-modellen:
+  1. Start med ros for gode løsninger (kun hvis der rent faktisk er noget at rose). HOLD DET HELT KORT (max to linjer!).
+  2. Gennemgå konkrete fejl, mangler eller arkitekturbrud.
+  3. Afslut med en opmuntrende og konstruktiv bemærkning (igen helt kort (ikke mere end en linje)).
+* **INGEN STØJ:** Find ALDRIG på ligegyldige nitpicks. Hvis koden er god, så godkend den kortfattet.
+
+## Fokusområder
+1. **Engelsk i kodebasen:** Verificer at alle kodekommentarer, logbeskeder, fejltekster, variabel-/klassenavne og dokumentation i koden er skrevet 100% på **engelsk**.
+2. **Logiske fejl & Bugs:** Off-by-one errors, manglende fejlhåndtering, race conditions, async/await-fejl, ubeskyttede nulls.
+3. **Clean Architecture & Mappestruktur:** Tjek at afhængigheder peger indad. Ingen databasekald i controllers eller forretningslogik i forkerte lag.
+4. **Tests (Non-blocking):** Gør venligt opmærksom på manglende tests ved ændret kerneforretningslogik.
+5. **Opfølgning på historik:** Tjek om tidligere påpegede fejl er blevet udbedret.
+${escalationRule}
+
+## Output Format (JSON)
+Du SKAL svare i dette JSON-skema:
+{
+  "pr_summary_description": "Kort struktureret beskrivelse af PR'ens formål og ændringer (på dansk)",
+  "verdict": ${verdictEnum},
+  "summary": "Den samlede anmeldelse med sandwich-modellen (Markdown)",
+  "inline_comments": [
+    {
+      "path": "sti/til/fil.ts",
+      "snippet": "den specifikke linje kode der har en fejl",
+      "comment": "Konstruktiv forklaring og forslag til rettelse (Markdown)"
+    }
+  ]
+}
+`;
+}
+
+async function performReview(prompt) {
+  // Phase 1: Fast triage with gemini-3.5-flash-lite
+  console.log(`Evaluating PR with fast triage model (${FAST_MODEL})...`);
+  try {
+    const fastInstruction = buildSystemInstruction(true);
+    const result = await requestGeminiModel(FAST_MODEL, prompt, fastInstruction, true);
+
+    if (result && result.verdict === "ESCALATE") {
+      console.log(`⚡ ${FAST_MODEL} requested escalation due to high PR complexity. Escalating to heavy reasoning models...`);
+    } else if (result) {
+      console.log(`✅ Review successfully completed by ${FAST_MODEL}`);
+      return result;
+    }
+  } catch (err) {
+    console.warn(`Fast triage with ${FAST_MODEL} failed (${err.message}). Proceeding to model queue...`);
+  }
+
+  // Phase 2: Try Heavy Models
+  for (const model of HEAVY_MODELS) {
     try {
-      const generationConfig = {
-        temperature: 0.2
-      };
-
-      if (expectJson) {
-        generationConfig.responseMimeType = "application/json";
+      console.log(`Attempting deep review with heavy model: ${model}...`);
+      const heavyInstruction = buildSystemInstruction(false);
+      const result = await requestGeminiModel(model, prompt, heavyInstruction, true);
+      if (result) {
+        console.log(`✅ Review successfully completed by heavy model: ${model}`);
+        return result;
       }
-
-      if (model.startsWith("gemini-3")) {
-        generationConfig.thinkingConfig = { thinkingLevel: "MEDIUM" };
-      }
-
-      const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(API_KEY);
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          systemInstruction: { parts: [{ text: systemInstruction }] },
-          generationConfig
-        })
-      });
-
-      if (response.status === 429 || response.status === 503) {
-        console.warn(`Model ${model} hit rate limit (${response.status}). Trying fallback...`);
-        continue;
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.warn(`Model ${model} returned error ${response.status}: ${errorText}. Trying fallback...`);
-        continue;
-      }
-
-      const data = await response.json();
-      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      if (!expectJson) {
-        return rawText ? rawText.trim() : null;
-      }
-
-      const parsed = extractAndCleanJson(rawText);
-      if (parsed) {
-        return parsed;
-      }
-
-      console.warn(`Model ${model} returned invalid JSON payload. Trying fallback...`);
     } catch (err) {
-      console.warn(`Error during API call to ${model}:`, err.message);
+      console.warn(`Heavy model ${model} unavailable (${err.message}). Trying next...`);
     }
   }
-  throw new Error("All model fallbacks were exhausted or failed.");
+
+  // Phase 3: Fallback queue with forced review (no escalation allowed)
+  console.log("Heavy models unavailable. Falling back to standard model queue with forced review...");
+  for (const model of FALLBACK_MODELS) {
+    try {
+      console.log(`Attempting fallback review with: ${model}...`);
+      const fallbackInstruction = buildSystemInstruction(false);
+      const result = await requestGeminiModel(model, prompt, fallbackInstruction, true);
+      if (result) {
+        console.log(`✅ Review successfully completed by fallback model: ${model}`);
+        return result;
+      }
+    } catch (err) {
+      console.warn(`Fallback model ${model} failed (${err.message}). Trying next...`);
+    }
+  }
+
+  throw new Error("All review models in all tiers failed.");
+}
+
+function filterDiff(diffText) {
+  return diffText
+    .split(/(?=^diff --git )/m)
+    .filter((chunk) => !chunk.includes("docs/PROJECT_CONTEXT.md"))
+    .join("");
 }
 
 function parseDiffLines(diffText) {
@@ -202,12 +290,29 @@ ${diff}
 `;
 
   try {
-    console.log("Evaluating whether PROJECT_CONTEXT.md requires updates...");
-    const response = await callGemini(prompt, systemInstruction, false);
-    if (!response) return;
+    console.log("Evaluating whether docs/PROJECT_CONTEXT.md requires updates...");
+    let response = null;
+    let usedModel = null;
+
+    for (const model of [FAST_MODEL, ...FALLBACK_MODELS]) {
+      try {
+        response = await requestGeminiModel(model, prompt, systemInstruction, false);
+        if (response) {
+          usedModel = model;
+          break;
+        }
+      } catch (err) {
+        console.warn(`Context evaluation with ${model} failed (${err.message}). Trying next...`);
+      }
+    }
+
+    if (!response) {
+      console.warn("Could not evaluate PROJECT_CONTEXT.md updates with available models.");
+      return;
+    }
 
     if (response.includes("[NO_CHANGES]")) {
-      console.log("No architectural changes detected. Skipping PROJECT_CONTEXT.md update.");
+      console.log(`[${usedModel}] No architectural changes detected. Skipping PROJECT_CONTEXT.md update.`);
       return;
     }
 
@@ -218,20 +323,24 @@ ${diff}
       .trim();
 
     if (cleanedContext && cleanedContext !== currentContext.trim()) {
+      execSync(`git fetch origin ${prBranch}`);
+      execSync(`git checkout -B ${prBranch} FETCH_HEAD`);
+
       fs.mkdirSync(path.dirname(CONTEXT_FILE_PATH), { recursive: true });
       fs.writeFileSync(CONTEXT_FILE_PATH, cleanedContext + "\n", "utf-8");
 
       execSync("git config user.name 'github-actions[bot]'");
       execSync("git config user.email 'github-actions[bot]@users.noreply.github.com'");
-      execSync(`git checkout ${prBranch}`);
       execSync("git add docs/PROJECT_CONTEXT.md");
       execSync("git commit -m 'docs: auto-update PROJECT_CONTEXT.md [skip review]'");
       execSync(`git push origin ${prBranch}`);
-      console.log("PROJECT_CONTEXT.md updated and committed to PR branch.");
+      console.log(`[${usedModel}] docs/PROJECT_CONTEXT.md updated and committed to ${prBranch}.`);
+      return execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
     }
   } catch (err) {
     console.warn("Could not automatically update PROJECT_CONTEXT.md:", err.message);
   }
+  return null;
 }
 
 async function run() {
@@ -250,39 +359,7 @@ async function run() {
     projectContext = fs.readFileSync(CONTEXT_FILE_PATH, "utf-8");
   }
 
-  const systemInstruction = `
-Du er en erfaren softwarearkitekt og tech lead, der anmelder et bachelorprojekt i softwareteknologi (Bifrost).
-
-## Sprog & Tone
-* Selve anmeldelsen og forklaringerne skrives på **dansk**, men alle tekniske begreber holdes på **engelsk** (f.eks. "Dependency Injection", "PR", "Controller", "Domain Model", "Repository", "DTO", "Race Condition").
-* Benyt sandwich-modellen:
-  1. Start med reel ros for gode løsninger (kun hvis der rent faktisk er noget at rose).
-  2. Gennemgå konkrete fejl, mangler eller arkitekturbrud.
-  3. Afslut med en opmuntrende og konstruktiv bemærkning.
-* **INGEN STØJ:** Find ALDRIG på ligegyldige nitpicks. Hvis koden er god, så godkend den kortfattet.
-
-## Fokusområder
-1. **Engelsk i kodebasen:** Verificer at alle kodekommentarer, logbeskeder, fejltekster, variabel-/klassenavne og dokumentation i koden er skrevet 100% på **engelsk**. Gør opmærksom på eventuelle danske kommentarer eller fejltekster i koden.
-2. **Logiske fejl & Bugs:** Off-by-one errors, manglende fejlhåndtering, race conditions, async/await-fejl, ubeskyttede nulls.
-3. **Clean Architecture & Mappestruktur:** Tjek at afhængigheder peger indad. Ingen databasekald i controllers eller forretningslogik i forkerte lag.
-4. **Tests (Non-blocking):** Gør venligt opmærksom på manglende tests ved ændret kerneforretningslogik (ignorer DTO'er, configs, ren boilerplate).
-5. **Opfølgning på historik:** Hvis der tidligere er påpeget fejl, tjek om de er rettet i den nye diff og anerkend udbedringen.
-
-## Output Format (JSON)
-Du SKAL svare i dette JSON-skema:
-{
-  "pr_summary_description": "Kort struktureret beskrivelse af PR'ens formål og ændringer (på dansk)",
-  "verdict": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
-  "summary": "Den samlede anmeldelse med sandwich-modellen (Markdown)",
-  "inline_comments": [
-    {
-      "path": "sti/til/fil.ts",
-      "snippet": "den specifikke linje kode der har en fejl",
-      "comment": "Konstruktiv forklaring og forslag til rettelse (Markdown)"
-    }
-  ]
-}
-`;
+  const reviewDiff = filterDiff(diff);
 
   const prompt = `
 PR Title: ${pr.title}
@@ -296,12 +373,11 @@ ${historicalFeedback || "No previous review comments."}
 
 Git Diff:
 \`\`\`diff
-${diff}
+${reviewDiff}
 \`\`\`
 `;
 
-  console.log("Analyzing PR with AI reviewer...");
-  const aiResult = await callGemini(prompt, systemInstruction, true);
+  const aiResult = await performReview(prompt);
 
   if (!pr.body || pr.body.trim().length === 0) {
     if (aiResult.pr_summary_description) {
@@ -315,7 +391,7 @@ ${diff}
     }
   }
 
-  const fileLinesMap = parseDiffLines(diff);
+  const fileLinesMap = parseDiffLines(reviewDiff);
   const validComments = [];
   const unmatchedComments = [];
 
@@ -340,6 +416,10 @@ ${diff}
     finalSummary += `\n\n### 💬 Yderligere bemærkninger\n${unmatchedComments.join("\n")}`;
   }
 
+  // Update documentation before submitting review to prevent stale approval dismissal
+  const newCommitSha = await updateContextFile(diff, pr.head.ref);
+  const targetCommitSha = newCommitSha || pr.head.sha;
+
   let reviewEvent = aiResult.verdict || "COMMENT";
 
   try {
@@ -347,7 +427,7 @@ ${diff}
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        commit_id: pr.head.sha,
+        commit_id: targetCommitSha,
         event: reviewEvent,
         body: finalSummary,
         comments: validComments
@@ -360,7 +440,7 @@ ${diff}
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          commit_id: pr.head.sha,
+          commit_id: targetCommitSha,
           event: "COMMENT",
           body: `> **Status: ✅ Approved by AI Reviewer**\n\n${finalSummary}`,
           comments: validComments
@@ -372,9 +452,6 @@ ${diff}
   }
 
   console.log(`Review submitted with verdict: ${reviewEvent}`);
-
-  // Auto-update PROJECT_CONTEXT.md directly on the PR branch
-  await updateContextFile(diff, pr.head.ref);
 }
 
 run().catch((err) => {
