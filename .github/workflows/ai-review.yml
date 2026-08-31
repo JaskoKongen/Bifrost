@@ -5,13 +5,13 @@ on:
     types: [created]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
 
 jobs:
   review:
-    # Kør kun hvis kommentaren er skrevet i en PR og starter med /review
+    # Only run if the comment is created on a PR and starts with /review
     if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/review')
     runs-on: ubuntu-latest
 
@@ -27,7 +27,7 @@ jobs:
               content: 'eyes'
             });
 
-      - name: Checkout repository
+      - name: Checkout repository on PR branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -42,6 +42,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY_REVIEW: ${{ secrets.GEMINI_API_KEY_REVIEW }}
           PR_NUMBER: ${{ github.event.issue.number }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           node .github/scripts/review.js
