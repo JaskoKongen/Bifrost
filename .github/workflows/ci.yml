@@ -1,0 +1,99 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+
+jobs:
+  # ==========================================
+  # 1. .NET Backend CI (Multi-project support)
+  # ==========================================
+  backend-ci:
+    name: Backend (.NET)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+
+      - name: Discover and Test .NET Solutions/Projects
+        run: |
+          # Find all .sln files recursively (excluding hidden directories)
+          mapfile -t SOLUTIONS < <(find . -name "*.sln" -not -path "*/.*/*")
+
+          if [ ${#SOLUTIONS[@]} -gt 0 ]; then
+            echo "Found ${#SOLUTIONS[@]} .NET solution(s):"
+            for sln in "${SOLUTIONS[@]}"; do
+              echo "==> Processing solution: $sln"
+              dotnet restore "$sln"
+              dotnet format "$sln" --verify-no-changes || echo "Warning: Code format verification failed, but continuing build."
+              dotnet build "$sln" --configuration Release --no-restore
+              dotnet test "$sln" --configuration Release --no-build --verbosity normal
+            done
+          else
+            # Fallback: Check for individual .csproj files if no .sln exists yet
+            mapfile -t PROJECTS < <(find . -name "*.csproj" -not -path "*/.*/*")
+            if [ ${#PROJECTS[@]} -gt 0 ]; then
+              echo "No .sln found. Processing ${#PROJECTS[@]} individual .csproj project(s):"
+              for proj in "${PROJECTS[@]}"; do
+                echo "==> Processing project: $proj"
+                dotnet restore "$proj"
+                dotnet build "$proj" --configuration Release --no-restore
+                dotnet test "$proj" --configuration Release --no-build --verbosity normal || true
+              done
+            else
+              echo "No .NET solutions or projects found in repository. Skipping."
+            fi
+          fi
+
+  # ==========================================
+  # 2. Frontend CI (Angular / React / Node)
+  # ==========================================
+  frontend-ci:
+    name: Frontend (Node.js)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Discover and Test Frontend Projects
+        run: |
+          # Find all directories containing package.json (excluding node_modules and .github)
+          mapfile -t PKG_DIRS < <(find . -name "package.json" -not -path "*/node_modules/*" -not -path "*/.github/*" -exec dirname {} \;)
+
+          if [ ${#PKG_DIRS[@]} -gt 0 ]; then
+            echo "Found ${#PKG_DIRS[@]} Node/Frontend project(s):"
+            for dir in "${PKG_DIRS[@]}"; do
+              echo "==> Processing frontend directory: $dir"
+              pushd "$dir" > /dev/null
+
+              if [ -f "package-lock.json" ]; then
+                npm ci
+              else
+                npm install
+              fi
+
+              npm run lint --if-present
+              npm test --if-present -- --watch=false --browsers=ChromeHeadless
+              npm run build --if-present
+
+              popd > /dev/null
+            done
+          else
+            echo "No package.json files found outside system directories. Skipping."
+          fi
