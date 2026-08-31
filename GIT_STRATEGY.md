@@ -60,26 +60,38 @@ git pf    # Pusher sikkert efter rebase (alias for: git push --force-with-lease)
 
 ---
 
+
 ## 5. Arbejde på afhængige features (Stacked Branches)
 
-Hvis du har en branch (`feature/A`), der venter på PR-review, og du vil arbejde videre på en ny feature (`feature/B`), som er afhængig af koden i A:
+Hvis du har en branch (`feature/A`), der venter på PR-review, og du skal bruge koden derfra i `feature/B`:
 
-### 1. Opret B ud fra A
+### Scenarie 1: feature/B er helt ny
+Hvis du starter på en frisk feature, der bygger ovenpå A:
 ```bash
 git checkout feature/A
 git checkout -b feature/B
-# Lav dit arbejde på feature/B og commit som normalt
+# Arbejd og commit som normalt
 ```
 
-### 2. Når feature/A er godkendt og merged ind i `dev`
-Når A er kommet ind på `dev`, skal B blot synkroniseres:
+### Scenarie 2: feature/B eksisterer allerede
+Hvis du allerede var i gang med B og pludselig mangler koden fra A:
+```bash
+git checkout feature/B
+git rebase feature/A      # Flytter B, så den nu ligger oven på A
+git pf                    # Pusher opdateringen til dit remote repository
+```
+
+---
+
+### Fælles: Når feature/A er godkendt og merged ind i `dev`
+Når PR'en for A er blevet merget ind i `dev`, skal B blot synkroniseres:
 
 ```bash
 git checkout feature/B
-git sync  # Henter nyeste dev og flytter dine feature/B-commits ovenpå
+git sync  # Henter nyeste dev og flytter dine feature/B-commits direkte over på dev
 git pf    # Pusher opdateringen til GitHub
 ```
-*(Git opdager automatisk, hvilke commits fra A der allerede er en del af `dev`, og lægger udelukkende dine nye B-commits ovenpå).*
+*(Git registrerer automatisk, at commits fra A nu ligger på `dev`, og efterlader udelukkende dine nye B-commits oven på `dev`).*
 
 ---
 
@@ -94,3 +106,33 @@ git pf    # Pusher opdateringen til GitHub
 4. Ret eventuelle fund og genkør `/review` ved behov.
 5. Når PR'en er godkendt og alle CI checks er grønne, foretages et standard **Merge Commit** ind i `dev`.
 
+Jo, absolut! Det er et meget almindeligt scenarie: `feature/B` eksisterede allerede, men har pludselig brug for noget kode fra `feature/A`, som stadig ligger i en PR.
+
+Her er forklaringen på, hvad der sker, samt hvordan afsnit 5 i jeres strategidokument skal se ud med begge scenarier.
+
+---
+
+### Hvad `git rebase feature/A` gør i dette tilfælde
+
+Hvis både `feature/A` og `feature/B` oprindeligt startede ud fra `dev`:
+```text
+dev:             ───●───●
+                     \   \
+feature/A (PR):       \   ●───● (ny kode du mangler)
+                       \
+feature/B (i gang):     ●───● (din eksisterende branch)
+```
+
+Når du står på `feature/B` og kører `git rebase feature/A`, flytter Git hele din `feature/B` over, så den nu **hviler oven på `feature/A`**:
+
+```text
+dev:             ───●───●
+                         \
+feature/A (PR):           ●───● 
+                               \
+feature/B (rebased):            ●'───●' (har nu koden fra A)
+```
+
+Når `feature/A` senere merges ind i `dev`, kører du bare `git sync` som normalt på `feature/B`. Git finder selv ud af, at A's commits nu er en del af `dev`, og rydder automatisk op.
+
+---
