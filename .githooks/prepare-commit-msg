@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+
+# Spring over ved merge-commits
+if [ "$COMMIT_SOURCE" = "merge" ]; then
+    exit 0
+fi
+
+# Hent nuværende branch-navn
+BRANCH_NAME=$(git symbolic-ref --short HEAD 2>/dev/null)
+if [ -z "$BRANCH_NAME" ]; then
+    exit 0
+fi
+
+# Find Jira-format (f.eks. BF-001, JIRA-1234)
+JIRA_KEY=$(echo "$BRANCH_NAME" | grep -o -E '[A-Z]{2,10}-[0-9]+' | head -n 1)
+
+if [ -n "$JIRA_KEY" ]; then
+    FIRST_LINE=$(grep -v '^#' "$COMMIT_MSG_FILE" | head -n 1)
+
+    # Tilføj kun hvis linjen ikke allerede starter med [$JIRA_KEY]
+    if ! echo "$FIRST_LINE" | grep -q -E "^\[$JIRA_KEY\]"; then
+        ORIGINAL_MSG=$(cat "$COMMIT_MSG_FILE")
+        echo "[$JIRA_KEY] $ORIGINAL_MSG" > "$COMMIT_MSG_FILE"
+    fi
+fi
