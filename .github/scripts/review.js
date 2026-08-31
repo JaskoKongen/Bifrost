@@ -32,30 +32,58 @@ async function githubFetch(endpoint, options = {}) {
   return await response.text();
 }
 
+// Verified models ordered by quota and stability
 const MODELS = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "gemma-4-31b-it",
-  "gemma-4-26b-it",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite"
+  "gemma-4-26b-a4b-it",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash"
 ];
+
+function extractAndCleanJson(rawText) {
+  if (!rawText) return null;
+
+  let cleaned = rawText
+    .replace(/<\|channel\>thought[\s\S]*?<channel\|>/g, "")
+    .replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, "$1")
+    .replace(/`(\{[^`]*\})`/g, "$1")
+    .trim();
+
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {
+      // Ignore parse error and proceed
+    }
+  }
+  return null;
+}
 
 async function callGemini(prompt, systemInstruction) {
   for (const model of MODELS) {
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${API_KEY}`;
+      const generationConfig = {
+        temperature: 0.2,
+        responseMimeType: "application/json"
+      };
+
+      if (model.startsWith("gemini-3")) {
+        generationConfig.thinkingConfig = { thinkingLevel: "MEDIUM" };
+      }
+
+      const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(API_KEY);
+      
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           systemInstruction: { parts: [{ text: systemInstruction }] },
-          generationConfig: {
-            responseMimeType: "application/json",
-            temperature: 0.2,
-            thinking_level: "medium"
-          }
+          generationConfig
         })
       });
 
@@ -72,11 +100,16 @@ async function callGemini(prompt, systemInstruction) {
 
       const data = await response.json();
       const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (rawText) {
-        return JSON.parse(rawText);
+      const parsed = extractAndCleanJson(rawText);
+
+      if (parsed) {
+        console.log(`Review successfully generated using model: ${model}`);
+        return parsed;
       }
+
+      console.warn(`Model ${model} returned invalid JSON payload. Trying next fallback...`);
     } catch (err) {
-      console.warn(`Failed call to ${model}:`, err.message);
+      console.warn(`Error during API call to ${model}:`, err.message);
     }
   }
   throw new Error("All model fallbacks were exhausted or failed.");
@@ -141,7 +174,7 @@ async function run() {
 
   const previousComments = await githubFetch(`/repos/${REPO}/pulls/${PR_NUMBER}/comments`);
   const historicalFeedback = Array.isArray(previousComments)
-    ? previousComments.map((c) => `[Fil: ${c.path} Linje: ${c.line}]: ${c.body}`).join("\n")
+    ? previousComments.map((c) => `[File: ${c.path} Line: ${c.line}]: ${c.body}`).join("\n")
     : "";
 
   let projectContext = "";
@@ -154,7 +187,7 @@ async function run() {
 Du er en erfaren softwarearkitekt og tech lead, der anmelder et bachelorprojekt i softwareteknologi (Bifrost).
 
 ## Sprog & Tone
-* Skriv på **dansk**, men behold alle tekniske begreber på **engelsk** (f.eks. "Dependency Injection", "PR", "Controller", "Domain Model", "Repository", "DTO", "Race Condition").
+* Selve anmeldelsen og forklaringerne skrives på **dansk**, men alle tekniske begreber holdes på **engelsk** (f.eks. "Dependency Injection", "PR", "Controller", "Domain Model", "Repository", "DTO", "Race Condition").
 * Benyt sandwich-modellen:
   1. Start med reel ros for gode løsninger (kun hvis der rent faktisk er noget at rose).
   2. Gennemgå konkrete fejl, mangler eller arkitekturbrud.
@@ -162,10 +195,11 @@ Du er en erfaren softwarearkitekt og tech lead, der anmelder et bachelorprojekt 
 * **INGEN STØJ:** Find ALDRIG på ligegyldige nitpicks. Hvis koden er god, så godkend den kortfattet.
 
 ## Fokusområder
-1. **Logiske fejl & Bugs:** Off-by-one errors, manglende fejlhåndtering, race conditions, async/await-fejl, ubeskyttede nulls.
-2. **Clean Architecture & Mappestruktur:** Tjek at afhængigheder peger indad. Ingen databasekald i controllers eller forretningslogik i forkerte lag.
-3. **Tests (Non-blocking):** Gør venligt opmærksom på manglende tests ved ændret kerneforretningslogik (ignorer DTO'er, configs, ren boilerplate).
-4. **Opfølgning på historik:** Hvis der tidligere er påpeget fejl, tjek om de er rettet i den nye diff og anerkend udbedringen.
+1. **Engelsk i kodebasen:** Verificer at alle kodekommentarer, logbeskeder, fejltekster, variabel-/klassenavne og dokumentation i koden er skrevet 100% på **engelsk**. Gør opmærksom på eventuelle danske kommentarer eller fejltekster i koden.
+2. **Logiske fejl & Bugs:** Off-by-one errors, manglende fejlhåndtering, race conditions, async/await-fejl, ubeskyttede nulls.
+3. **Clean Architecture & Mappestruktur:** Tjek at afhængigheder peger indad. Ingen databasekald i controllers eller forretningslogik i forkerte lag.
+4. **Tests (Non-blocking):** Gør venligt opmærksom på manglende tests ved ændret kerneforretningslogik (ignorer DTO'er, configs, ren boilerplate).
+5. **Opfølgning på historik:** Hvis der tidligere er påpeget fejl, tjek om de er rettet i den nye diff og anerkend udbedringen.
 
 ## Output Format (JSON)
 Du SKAL svare i dette JSON-skema:
@@ -184,14 +218,14 @@ Du SKAL svare i dette JSON-skema:
 `;
 
   const prompt = `
-PR Titel: ${pr.title}
-PR Forfatter: ${pr.user.login}
+PR Title: ${pr.title}
+PR Author: ${pr.user.login}
 
-Projektkontekst:
-${projectContext || "Ingen yderligere kontekst angivet."}
+Project Context:
+${projectContext || "No additional project context provided."}
 
-Tidligere feedback fra reviews:
-${historicalFeedback || "Ingen tidligere kommentarer."}
+Historical Review Feedback:
+${historicalFeedback || "No previous review comments."}
 
 Git Diff:
 \`\`\`diff
@@ -199,7 +233,7 @@ ${diff}
 \`\`\`
 `;
 
-  console.log("Analyserer PR med AI...");
+  console.log("Analyzing PR with AI reviewer...");
   const aiResult = await callGemini(prompt, systemInstruction);
 
   if (!pr.body || pr.body.trim().length === 0) {
@@ -234,7 +268,7 @@ ${diff}
     }
   }
 
-  let finalSummary = aiResult.summary || "Review udført.";
+  let finalSummary = aiResult.summary || "Review completed.";
   if (unmatchedComments.length > 0) {
     finalSummary += `\n\n### 💬 Yderligere bemærkninger\n${unmatchedComments.join("\n")}`;
   }
@@ -250,10 +284,10 @@ ${diff}
     })
   });
 
-  console.log(`Review indsendt med status: ${aiResult.verdict}`);
+  console.log(`Review submitted with verdict: ${aiResult.verdict}`);
 }
 
 run().catch((err) => {
-  console.error("Workflow fejlede:", err);
+  console.error("Workflow failed:", err);
   process.exit(1);
 });
