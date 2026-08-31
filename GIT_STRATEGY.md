@@ -8,7 +8,6 @@ Når du har clonet repositoriet, køres følgende kommando **én gang** i termin
 ```bash
 git config --local include.path ../.gitconfig
 chmod +x .githooks/prepare-commit-msg
-
 ```
 
 *(Bemærk: `--local` isolerer ændringerne udelukkende til dette repository og rører ikke dine globale Git-indstillinger).*
@@ -33,7 +32,7 @@ Vi benytter **Conventional Commits** for at gøre historikken letlæselig for b�
 
 ### Automatisk Jira-præfiks
 
-Hvis dit branch-navn indeholder en Jira-nummeret (f.eks. `BF-012`), sørger vores lokale Git-hook automatisk for at tilføje `[BF-012]` foran din commit-besked.
+Hvis dit branch-navn indeholder en Jira-nummeret (f.eks. `BF-012`), sørger vores lokale Git-hook automatisk for at tilføje `[BF-012]` foran din commit-besked, hvilket giver et godt overblik over hvilke Jira-sager, der er relateret til hvilke commits.
 
 * **Du skriver:** `git commit -m "feat: add token validation middleware"`
 * **Git gemmer:** `[BF-012] feat: add token validation middleware`
@@ -45,7 +44,6 @@ Når der sker ændringer på `dev` undervejs, rebaser vi lokalt i stedet for at 
 ```bash
 git sync  # Henter dev og rebaser din branch (alias for: git fetch origin && git rebase origin/dev)
 git pf    # Pusher sikkert efter rebase (alias for: git push --force-with-lease)
-
 ```
 
 ## 5. Integration via Pull Request
