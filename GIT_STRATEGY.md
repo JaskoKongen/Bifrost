@@ -49,7 +49,11 @@ git pf    # Pusher sikkert efter rebase (alias for: git push --force-with-lease)
 ```
 
 ## 5. Integration via Pull Request
-
 1. Opret PR med base `dev`.
-2. Afvent automatiseret CI-tjek og CodeRabbit AI review.
-3. Foretag et standard **Merge Commit** på GitHub (rebase sikrer, at det sker uden forudgående merge-støj).
+2. Start AI-reviewet ved at skrive en kommentar på PR'en:
+```text
+   /review
+```
+3. Scriptet analyserer koden med ræsonnering (thinking mode), opdaterer PR-beskrivelsen hvis den er tom, indsætter inline-kommentarer ved fund og indsender et formelt GitHub Review (`APPROVE` eller `REQUEST_CHANGES`).
+4. Ret eventuelle fund og genkør `/review` ved behov.
+5. Foretag et standard **Merge Commit** på GitHub.
