@@ -1,27 +1,34 @@
 # Git- og Branch-strategi: Bifrost
 
-Her beskrives vores Git-workflow. Målet er en stabil og gennemskuelig struktur, optimal udnyttelse af AI Pull Request (PR) reviews og en ren historik uden merge-støj.
+Her beskrives vores Git-workflow. Formålet er at sikre et stabilt udviklingsmiljø, en overskuelig commit-historik uden lokal merge-spaghetti og optimal udnyttelse af vores automatiserede AI Pull Request (PR) review.
+
+---
 
 ## 1. Kom godt i gang (Setup)
-Når du har clonet repositoriet, køres følgende kommando **én gang** i terminalen for at aktivere projektets delte aliases, rebase-indstillinger og Jira-hooks:
+Når du har clonet repositoriet, køres følgende kommandoer **én gang** for at aktivere projektets delte aliases, rebase-indstillinger og Jira-hooks:
 
 ```bash
 git config --local include.path ../.gitconfig
-chmod +x .githooks/prepare-commit-msg
+git config --local core.hooksPath .githooks
+chmod +x .githooks/prepare-commit-msg 2>/dev/null || true
 ```
 
-*(Bemærk: `--local` isolerer ændringerne udelukkende til dette repository og rører ikke dine globale Git-indstillinger).*
+*(Bemærk: `--local` isolerer indstillingerne til dette repository. På Windows i Git Bash/PowerShell er `chmod` automatisk håndteret).*
+
+---
 
 ## 2. Branch-struktur
 
-* **main (Produktion):** Kun stabile releases. Ingen direkte commits.
-* **dev (Integration):** Vores primære default branch, hvor alt arbejde integreres.
-* **feature/* (Nye funktioner):** Branches oprettet ud fra `dev` til ny funktionalitet (f.eks. `feature/BF-012-jwt-auth`).
-* **fix/* (Fejlrettelser):** Branches oprettet ud fra `dev` til bugfixes (f.eks. `fix/BF-045-null-user-token`).
+* **`main` (Produktion):** Kun stabile releases. Ingen direkte commits.
+* **`dev` (Integration):** Vores primære default branch, hvor alt arbejde integreres via PRs.
+* **`feature/*` (Nye funktioner):** Oprettes ud fra `dev` (f.eks. `feature/BF-012-jwt-auth`).
+* **`fix/*` (Fejlrettelser):** Oprettes ud fra `dev` til bugfixes (f.eks. `fix/BF-045-null-token`).
+
+---
 
 ## 3. Commit-konventioner & Automatisk Jira-linking
 
-Vi benytter **Conventional Commits** for at gøre historikken letlæselig for både mennesker og AI-revieweren (CodeRabbit), som bruger præfikserne til lynhurtigt at afkode hensigten med ændringerne:
+Vi benytter **Conventional Commits** for at gøre historikken letlæselig for både teamet og vores AI-reviewer, som bruger præfikserne til at afkode hensigten med ændringerne:
 
 * `feat:` Ny funktionalitet til brugeren/systemet.
 * `fix:` Fejlrettelse i eksisterende kode.
@@ -30,28 +37,60 @@ Vi benytter **Conventional Commits** for at gøre historikken letlæselig for b�
 * `docs:` Ændringer i dokumentation eller README.
 * `chore:` Vedligeholdelse af build-scripts, dependencies eller config-filer.
 
-### Automatisk Jira-præfiks
+Bruges GitHub Copilot til at oprette commit-beskeder plejer den selv at foreslå Conventional Commit-præfik
 
-Hvis dit branch-navn indeholder en Jira-nummeret (f.eks. `BF-012`), sørger vores lokale Git-hook automatisk for at tilføje `[BF-012]` foran din commit-besked, hvilket giver et godt overblik over hvilke Jira-sager, der er relateret til hvilke commits.
+### Automatisk Jira-præfiks
+Hvis dit branch-navn indeholder et Jira-nummer (f.eks. `feature/BF-012-tilføj-auth`), tilføjer vores Git-hook automatisk sagsnummeret foran din commit-besked:
 
 * **Du skriver:** `git commit -m "feat: add token validation middleware"`
 * **Git gemmer:** `[BF-012] feat: add token validation middleware`
 
-## 4. Dagligt Workflow
+Det gør det nemt at spore commits tilbage til Jira-issues.
 
-Når der sker ændringer på `dev` undervejs, rebaser vi lokalt i stedet for at merge:
+---
+
+## 4. Dagligt Workflow (Undgå lokal merge-spaghetti)
+
+For at undgå unødvendige lokale "Merge branch 'dev' into feature/..." commits, **rebaser vi altid lokalt** frem for at merge:
 
 ```bash
 git sync  # Henter dev og rebaser din branch (alias for: git fetch origin && git rebase origin/dev)
 git pf    # Pusher sikkert efter rebase (alias for: git push --force-with-lease)
 ```
 
-## 5. Integration via Pull Request
-1. Opret PR med base `dev`.
-2. Start AI-reviewet ved at skrive en kommentar på PR'en:
-```text
-   /review
+---
+
+## 5. Arbejde på afhængige features (Stacked Branches)
+
+Hvis du har en branch (`feature/A`), der venter på PR-review, og du vil arbejde videre på en ny feature (`feature/B`), som er afhængig af koden i A:
+
+### 1. Opret B ud fra A
+```bash
+git checkout feature/A
+git checkout -b feature/B
+# Lav dit arbejde på feature/B og commit som normalt
 ```
-3. Scriptet analyserer koden med ræsonnering (thinking mode), opdaterer PR-beskrivelsen hvis den er tom, indsætter inline-kommentarer ved fund og indsender et formelt GitHub Review (`APPROVE` eller `REQUEST_CHANGES`).
+
+### 2. Når feature/A er godkendt og merged ind i `dev`
+Når A er kommet ind på `dev`, skal B blot synkroniseres:
+
+```bash
+git checkout feature/B
+git sync  # Henter nyeste dev og flytter dine feature/B-commits ovenpå
+git pf    # Pusher opdateringen til GitHub
+```
+*(Git opdager automatisk, hvilke commits fra A der allerede er en del af `dev`, og lægger udelukkende dine nye B-commits ovenpå).*
+
+---
+
+## 6. Integration via Pull Request
+
+1. Opret en PR på GitHub med base `dev`.
+2. Start AI-reviewet ved at skrive en kommentar på PR'en:
+   ```text
+   /review
+   ```
+3. Scriptet analyserer koden, opdaterer PR-beskrivelsen, foretager eventuelle automatiske opdateringer i `docs/PROJECT_CONTEXT.md` og indsender sit review (`APPROVE` eller `REQUEST_CHANGES`).
 4. Ret eventuelle fund og genkør `/review` ved behov.
-5. Foretag et standard **Merge Commit** på GitHub.
+5. Når PR'en er godkendt og alle CI checks er grønne, foretages et standard **Merge Commit** ind i `dev`.
+
