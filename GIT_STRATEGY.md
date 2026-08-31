@@ -106,33 +106,6 @@ git pf    # Pusher opdateringen til GitHub
 4. Ret eventuelle fund og genkør `/review` ved behov.
 5. Når PR'en er godkendt og alle CI checks er grønne, foretages et standard **Merge Commit** ind i `dev`.
 
-Jo, absolut! Det er et meget almindeligt scenarie: `feature/B` eksisterede allerede, men har pludselig brug for noget kode fra `feature/A`, som stadig ligger i en PR.
-
-Her er forklaringen på, hvad der sker, samt hvordan afsnit 5 i jeres strategidokument skal se ud med begge scenarier.
-
----
-
-### Hvad `git rebase feature/A` gør i dette tilfælde
-
-Hvis både `feature/A` og `feature/B` oprindeligt startede ud fra `dev`:
-```text
-dev:             ───●───●
-                     \   \
-feature/A (PR):       \   ●───● (ny kode du mangler)
-                       \
-feature/B (i gang):     ●───● (din eksisterende branch)
-```
-
-Når du står på `feature/B` og kører `git rebase feature/A`, flytter Git hele din `feature/B` over, så den nu **hviler oven på `feature/A`**:
-
-```text
-dev:             ───●───●
-                         \
-feature/A (PR):           ●───● 
-                               \
-feature/B (rebased):            ●'───●' (har nu koden fra A)
-```
-
 Når `feature/A` senere merges ind i `dev`, kører du bare `git sync` som normalt på `feature/B`. Git finder selv ud af, at A's commits nu er en del af `dev`, og rydder automatisk op.
 
 ---
